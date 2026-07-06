@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isSuperadmin() {
+      return isSignedIn() && myRole() == 'superadmin';
+    }
+
+    // users: mỗi người tự đọc hồ sơ mình, chỉ superadmin đọc toàn bộ / ghi.
+    // Việc tạo/sửa/xóa/reset mật khẩu thực hiện qua Cloud Functions (đã kiểm tra quyền ở server),
+    // client không được ghi trực tiếp field passwordHash / role.
+    match /users/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isSuperadmin());
+      allow list: if isSuperadmin();
+      allow write: if false; // chỉ Cloud Functions (Admin SDK) mới ghi được
+    }
+
+    // matches: ai đăng nhập cũng xem được; chỉ superadmin sửa (thêm trận, cập nhật kèo tay).
+    match /matches/{matchId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSuperadmin();
+    }
+
+    // predictions: người dùng chỉ tạo/sửa dự đoán của chính mình, và chỉ khi trận chưa khóa kèo.
+    // Trường điểm "points"/"outcome" chỉ được ghi qua Cloud Function settleMatch (Admin SDK).
+    match /predictions/{predId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && !('points' in request.resource.data)
+        && !('outcome' in request.resource.data);
+      allow delete: if isSuperadmin();
+    }
+
+    // leaderboard: chỉ Cloud Function (Admin SDK) ghi, ai đăng nhập cũng xem được.
+    match /leaderboard/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // config: chỉ superadmin đọc/sửa (bật/tắt cập nhật kèo tự động, nguồn dữ liệu...)
+    match /config/{doc} {
+      allow read, write: if isSuperadmin();
+    }
+  }
+}
